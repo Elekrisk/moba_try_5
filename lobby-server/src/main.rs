@@ -7,13 +7,14 @@ use std::{
     cmp::Ordering,
     collections::HashMap,
     net::{Ipv6Addr, SocketAddrV6},
-    sync::Arc,
+    sync::{Arc, Once},
     time::Duration,
 };
 
 use lobby_server::{
-    Lobby, LobbyId, LobbySettings, LobbyShortInfo, MessageFromPlayer, MessageFromServer, PlayerId,
-    PlayerInfo, ReadMessage as _, Team, WriteMessage as _,
+    ChampSelectState, ChampionSelection, Lobby, LobbyId, LobbySettings, LobbyShortInfo, LobbyState,
+    MessageFromPlayer, MessageFromServer, PlayerId, PlayerInfo, ReadMessage as _, Team,
+    WriteMessage as _,
 };
 use tokio::task::{JoinHandle, JoinSet};
 use wtransport::{config::Ipv6DualStackConfig, Connection, Endpoint, Identity, ServerConfig};
@@ -279,6 +280,26 @@ impl ServerState {
             };
         }
 
+        macro_rules! normal_lobby {
+            ($lobby:expr) => {
+                if matches!($lobby.lobby_state, LobbyState::Normal) {
+                    Ok(())
+                } else {
+                    Err("Lobby is in invalid state.")
+                }
+            };
+        }
+
+        macro_rules! champ_select {
+            ($lobby:expr) => {
+                if let LobbyState::ChampSelect(state) = &mut $lobby.lobby_state {
+                    Ok(state)
+                } else {
+                    Err("Lobby is in invalid state.")
+                }
+            };
+        }
+
         // let lobby_exists = |lobby_id| {
         //     let Some(lobby) = self.lobbies.get_mut(&lobby_id) else {
         //         self.send_message(
@@ -309,6 +330,7 @@ impl ServerState {
                     },
                     leader: player_id,
                     players: [(Team(0), vec![player_id]), (Team(1), vec![])].into(),
+                    lobby_state: LobbyState::Normal,
                 };
 
                 self.lobbies.insert(lobby_id, lobby);
@@ -325,6 +347,7 @@ impl ServerState {
                 guards! {
                     [not_in_lobby!()]
                     [Ok(lobby) = lobby_exists!(lobby_id)]
+                    [normal_lobby!(lobby)]
                     [!lobby.settings.lobby_is_open => "The lobby is closed."]
                     [lobby.players.values().map(Vec::len).sum::<usize>() >= lobby.settings.team_count * lobby.settings.player_limit_per_team => "The lobby is full"]
                 }
@@ -359,6 +382,7 @@ impl ServerState {
                 guards! {
                     [Ok(lobby_id) = in_lobby!()]
                     [Ok(lobby) = lobby_exists!(lobby_id)]
+                    [normal_lobby!(lobby)]
                     [!lobby.settings.players_can_change_team && lobby.leader != player_id => "Team switching is disabled in this lobby."]
                     [id != player_id && lobby.leader != player_id => "Cannot switch team of other player."]
                     [!lobby.players.contains_key(&team) => format!("{team} does not exist.")]
@@ -420,6 +444,7 @@ impl ServerState {
                 guards! {
                     [Ok(lobby_id) = in_lobby!()]
                     [Ok(lobby) = lobby_exists!(lobby_id)]
+                    [normal_lobby!(lobby)]
                     [lobby.leader != player_id => "You are not the lobby leader."]
                 }
 
@@ -430,6 +455,7 @@ impl ServerState {
                 guards! {
                     [Ok(lobby_id) = in_lobby!()]
                     [Ok(lobby) = lobby_exists!(lobby_id)]
+                    [normal_lobby!(lobby)]
                     [lobby.leader != player_id => "You are not the lobby leader."]
                     [lobby_settings.name.is_empty() => "Lobby name cannot be empty."]
                     [lobby_settings.name.chars().all(char::is_whitespace) => "Lobby name cannot be only whitespace."]
@@ -498,6 +524,7 @@ impl ServerState {
                 guards! {
                     [Ok(lobby_id) = in_lobby!()]
                     [Ok(lobby) = lobby_exists!(lobby_id)]
+                    [normal_lobby!(lobby)]
                     [!lobby.settings.players_can_change_team && lobby.leader != player_id => "Team switching is disabled in this lobby."]
                     [lobby.leader != player_id => "Non-leader cannot switch places of players."]
                 }
@@ -528,7 +555,90 @@ impl ServerState {
                 lobby.players.get_mut(&pos_a.0).unwrap()[pos_a.1] = player_b;
                 lobby.players.get_mut(&pos_b.0).unwrap()[pos_b.1] = player_a;
 
-                self.broadcast_lobby_message(lobby_id, None, MessageFromServer::PlayersSwitched(player_a, player_b));
+                self.broadcast_lobby_message(
+                    lobby_id,
+                    None,
+                    MessageFromServer::PlayersSwitched(player_a, player_b),
+                );
+            }
+            MessageFromPlayer::EnterChampSelect => {
+                guards! {
+                    [Ok(lobby_id) = in_lobby!()]
+                    [Ok(lobby) = lobby_exists!(lobby_id)]
+                    [normal_lobby!(lobby)]
+                    [lobby.leader != player_id => "Non-leader cannot trigger champ select."]
+                }
+
+                let new_state = LobbyState::ChampSelect(ChampSelectState {
+                    available_champs: (1..=100).map(|d| format!("Champ {d}")).collect(),
+                    selected_champs: lobby
+                        .players
+                        .values()
+                        .flatten()
+                        .map(|p| (*p, None))
+                        .collect(),
+                });
+
+                lobby.lobby_state = new_state;
+
+                self.broadcast_lobby_message(lobby_id, None, MessageFromServer::ChampSelectEntered);
+            }
+            MessageFromPlayer::SelectChampion(champion) => {
+                guards! {
+                    [Ok(lobby_id) = in_lobby!()]
+                    [Ok(lobby) = lobby_exists!(lobby_id)]
+                    [Ok(state) = champ_select!(lobby)]
+                    [!state.available_champs.contains(&champion) => "That champion does not exist."]
+                    [state.selected_champs.get(&player_id).unwrap().as_ref().map(|x| x.locked).unwrap_or(false) => "You cannot change locked selection."]
+                }
+
+                state.selected_champs.insert(
+                    player_id,
+                    Some(ChampionSelection {
+                        champion: champion.clone(),
+                        locked: false,
+                    }),
+                );
+                self.broadcast_lobby_message(
+                    lobby_id,
+                    None,
+                    MessageFromServer::PlayerSelectedChampion(player_id, champion),
+                );
+            }
+            MessageFromPlayer::LockChampSelection => {
+                guards! {
+                    [Ok(lobby_id) = in_lobby!()]
+                    [Ok(lobby) = lobby_exists!(lobby_id)]
+                    [Ok(state) = champ_select!(lobby)]
+                    [!state.selected_champs.get(&player_id).unwrap().is_some() => "Cannot lock empty selection."]
+                }
+
+                state
+                    .selected_champs
+                    .get_mut(&player_id)
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .locked = true;
+
+                if state
+                    .selected_champs
+                    .values()
+                    .all(|s| s.as_ref().is_some_and(|s| s.locked))
+                {
+                    // All players locked: start game
+                    self.broadcast_lobby_message(
+                        lobby_id,
+                        None,
+                        MessageFromServer::GameStarted("what lmao gaming".into()),
+                    );
+                }
+
+                self.broadcast_lobby_message(
+                    lobby_id,
+                    None,
+                    MessageFromServer::ChampSelectionLocked(player_id),
+                );
             }
             MessageFromPlayer::StartGame => todo!(),
         }

@@ -39,6 +39,26 @@ pub struct Lobby {
     pub settings: LobbySettings,
     pub leader: PlayerId,
     pub players: HashMap<Team, Vec<PlayerId>>,
+    pub lobby_state: LobbyState,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum LobbyState {
+    Normal,
+    ChampSelect(ChampSelectState),
+    InGame
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ChampSelectState {
+    pub available_champs: Vec<String>,
+    pub selected_champs: HashMap<PlayerId, Option<ChampionSelection>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ChampionSelection {
+    pub champion: String,
+    pub locked: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -88,6 +108,9 @@ pub enum MessageFromPlayer {
     GetPlayerInfo(PlayerId),
     KickPlayer(PlayerId),
     UpdateSettings(LobbySettings),
+    EnterChampSelect,
+    SelectChampion(String),
+    LockChampSelection,
     StartGame,
     Disconnecting,
 }
@@ -107,6 +130,9 @@ pub enum MessageFromServer {
     LobbyLeaderChanged(PlayerId),
     RequestRefused(String),
     SettingsUpdated(LobbySettings),
+    ChampSelectEntered,
+    PlayerSelectedChampion(PlayerId, String),
+    ChampSelectionLocked(PlayerId),
     GameStarted(String),
     ServerShutdown,
 }

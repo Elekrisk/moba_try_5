@@ -1,3 +1,5 @@
+mod champ_select;
+
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 
 use bevy::{ecs::component::StorageType, prelude::*, utils::HashMap};
@@ -8,13 +10,17 @@ use bevy_cosmic_edit::{
     BufferRefExtras as _, CosmicEditBuffer, CosmicFontSystem,
 };
 use bevy_tokio_tasks::TokioTasksRuntime;
+use champ_select::build_champ_select;
 use lightyear::{
     client::config::{ClientConfig, NetcodeConfig},
-    prelude::{client::{Authentication, ClientTransport, IoConfig, NetConfig}, SharedConfig},
+    prelude::{
+        client::{Authentication, ClientTransport, IoConfig, NetConfig},
+        SharedConfig,
+    },
 };
 use lobby_server::{
-    Lobby, LobbyId, LobbySettings, LobbyShortInfo, MessageFromPlayer, MessageFromServer, PlayerId,
-    PlayerInfo, ReadMessage, Team, WriteMessage,
+    Lobby, LobbyId, LobbySettings, LobbyShortInfo, LobbyState as LState, MessageFromPlayer,
+    MessageFromServer, PlayerId, PlayerInfo, ReadMessage, Team, WriteMessage,
 };
 use tokio::task::JoinHandle;
 
@@ -148,6 +154,7 @@ fn setup_ui(mut commands: Commands) {
             parent.spawn((
                 Node {
                     width: Val::Percent(100.0),
+                    max_height: Val::Percent(100.0),
                     flex_grow: 1.0,
                     ..default()
                 },
@@ -286,6 +293,7 @@ fn build_lobby_list_entry(parent: &mut ChildBuilder, lobby_info: &LobbyShortInfo
 }
 
 fn scroll(mut trigger: Trigger<ScrollEvent>, mut q: Query<&mut ScrollPosition>) {
+    info!("Scroll!");
     let event = trigger.event();
     if let Ok(mut scroll) = q.get_mut(trigger.entity()) {
         scroll.offset_x -= event.dx;
@@ -316,6 +324,7 @@ fn build_lobby_interface(parent: &mut ChildBuilder) {
     parent.spawn((
         Node {
             width: Val::Percent(100.0),
+            max_height: Val::Percent(100.0),
             flex_direction: FlexDirection::Column,
             ..default()
         },
@@ -374,6 +383,16 @@ fn refresh_lobby_interface(
 }
 
 fn update_lobby_interface(ctx: &LobbyBuildingContext, parent: &mut ChildBuilder) {
+    match &ctx.lobby.lobby_state {
+        LState::Normal => { /* TODO: break out into separate module instead of continuing in this function */
+        }
+        LState::ChampSelect(_) => {
+            build_champ_select(ctx, parent);
+            return;
+        }
+        LState::InGame => unreachable!("Should never need to draw UI for this"),
+    }
+
     // Top bar
     parent
         .spawn(Node {
@@ -400,6 +419,11 @@ fn update_lobby_interface(ctx: &LobbyBuildingContext, parent: &mut ChildBuilder)
                             });
                         },
                     );
+                parent
+                    .spawn((Button, Text::new("[Enter Champ Select]")))
+                    .on_click(move |send: Res<SendMessage>| {
+                        let _ = send.send(MessageFromPlayer::EnterChampSelect);
+                    });
             }
         });
 
@@ -829,7 +853,7 @@ fn build_player_slot_contents(
     ctx: &LobbyBuildingContext,
     parent: &mut ChildBuilder,
 ) {
-    if ctx.i_am_leader() {
+    if ctx.lobby.leader == player {
         parent.spawn((Text::new("[L]"), PickingBehavior::IGNORE));
     }
 
@@ -927,10 +951,13 @@ fn on_msg_send(
         | MessageFromServer::PlayerLeftYourLobby(_)
         | MessageFromServer::PlayerSwitchedTeam(_, _)
         | MessageFromServer::SettingsUpdated(_)
-        | MessageFromServer::PlayersSwitched(_, _) => {
+        | MessageFromServer::PlayersSwitched(_, _)
+        | MessageFromServer::ChampSelectEntered
+        | MessageFromServer::PlayerSelectedChampion(_, _)
+        | MessageFromServer::ChampSelectionLocked(_) => {
             let _ = send.send(MessageFromPlayer::GetLobbyInfo(current_lobby.unwrap().id));
         }
-        MessageFromServer::GameStarted(address) => {}
+        MessageFromServer::GameStarted(address) => todo!(),
         MessageFromServer::ServerShutdown => {
             commands.queue(CreateModal::info("Lobby server was shut down".into()));
             next_game_state.set(crate::State::Login);
@@ -942,5 +969,4 @@ fn on_msg_send(
 #[derive(Resource)]
 struct GameServerAddress(SocketAddr);
 
-fn on_game_start(address: Res<GameServerAddress>) {
-}
+fn on_game_start(address: Res<GameServerAddress>) {}

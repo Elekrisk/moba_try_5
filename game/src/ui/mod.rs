@@ -85,25 +85,23 @@ fn close_modal(modal: Option<Single<Entity, With<Modal>>>, mut commands: Command
     }
 }
 
-pub struct CreateModal<F: FnOnce(&mut ChildBuilder) + Send + Sync + 'static> {
+pub struct CreateModal {
     pub title: String,
     pub allow_close: bool,
-    pub builder: F,
+    pub builder: Box<dyn FnOnce(&mut ChildBuilder) + Send + Sync + 'static>,
 }
 
-pub type InfoFn = impl FnOnce(&mut ChildBuilder) + Send + Sync + 'static;
-
-impl<F: FnOnce(&mut ChildBuilder) + Send + Sync + 'static> CreateModal<F> {
-    pub fn new(title: impl Into<String>, allow_close: bool, builder: F) -> Self {
+impl CreateModal {
+    pub fn new(title: impl Into<String>, allow_close: bool, builder: impl FnOnce(&mut ChildBuilder) + Send + Sync + 'static) -> Self {
         Self {
             title: title.into(),
             allow_close,
-            builder,
+            builder: Box::new(builder),
         }
     }
 }
 
-impl CreateModal<InfoFn> {
+impl CreateModal {
     pub fn info(content: String) -> Self {
         Self::new("Info", true, move |parent: &mut ChildBuilder| {
             parent.spawn(Text::new(content));
@@ -111,7 +109,7 @@ impl CreateModal<InfoFn> {
     }
 }
 
-impl<F: FnOnce(&mut ChildBuilder) + Send + Sync + 'static> Command for CreateModal<F> {
+impl Command for CreateModal {
     fn apply(self, world: &mut World) {
         let mut commands = world.commands();
         create_modal(&mut commands, self.title, self.allow_close, self.builder);
@@ -131,10 +129,12 @@ pub fn create_modal(
 ) {
     fn close_modal(
         mut trigger: Trigger<Pointer<Click>>,
-        modal: Single<Entity, With<Modal>>,
+        modal: Query<Entity, With<Modal>>,
         mut commands: Commands,
     ) {
-        commands.entity(*modal).despawn_recursive();
+        if let Some(e) = modal.iter().last() {
+            commands.entity(e).despawn_recursive();
+        }
         trigger.propagate(false);
     }
 

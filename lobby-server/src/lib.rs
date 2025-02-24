@@ -87,6 +87,10 @@ impl PlayerId {
     pub fn new() -> Self {
         Self(Uuid::new_v4())
     }
+
+    pub fn get(&self) -> Uuid {
+        self.0
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -133,8 +137,32 @@ pub enum MessageFromServer {
     ChampSelectEntered,
     PlayerSelectedChampion(PlayerId, String),
     ChampSelectionLocked(PlayerId),
-    GameStarted(String),
+    GameStarted(ConnectTokenWrapper),
     ServerShutdown,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub enum MessageFromLobbyToGameServer {
+    LobbyInitialMessage {
+        token: Uuid,
+        players: HashMap<Team, Vec<PlayerSelection>>,
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub enum MessageFromGameServerToLobby {
+    PlayerTokensGenerated {
+        players: HashMap<PlayerId, ConnectTokenWrapper>
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ConnectTokenWrapper(pub Vec<u8>);
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PlayerSelection {
+    pub player: PlayerInfo,
+    pub champion: String,
 }
 
 pub trait ReadMessage {

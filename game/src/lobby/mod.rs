@@ -14,8 +14,7 @@ use champ_select::build_champ_select;
 use lightyear::{
     client::config::{ClientConfig, NetcodeConfig},
     prelude::{
-        client::{Authentication, ClientTransport, IoConfig, NetConfig},
-        SharedConfig,
+        client::{Authentication, ClientTransport, IoConfig, NetConfig}, ConnectToken, SharedConfig
     },
 };
 use lobby_server::{
@@ -25,12 +24,11 @@ use lobby_server::{
 use tokio::task::JoinHandle;
 
 use crate::{
-    login::{LobbyConnection, MyPlayerId},
-    ui::{
+    game::network::GameServerToken, login::{LobbyConnection, MyPlayerId}, ui::{
         build_textedit,
         checkbox::{build_checkbox, Checkbox},
         create_modal, CloseModal, CreateModal, OnClickExt, ScrollEvent,
-    },
+    }
 };
 
 pub fn lobby(app: &mut App) {
@@ -908,6 +906,7 @@ fn on_player_info_updated(
 
 fn on_msg_send(
     trigger: Trigger<MsgEvent>,
+    current_state: Res<State<LobbyState>>,
     mut next_state: ResMut<NextState<LobbyState>>,
     mut next_game_state: ResMut<NextState<crate::State>>,
     send: Res<SendMessage>,
@@ -937,11 +936,13 @@ fn on_msg_send(
             next_state.set(LobbyState::LobbyBrowser);
         }
         MessageFromServer::LobbyInfo(lobby) => {
-            commands.insert_resource(CurrentLobby {
-                id: lobby.id,
-                info: Some(lobby.clone()),
-            });
-            commands.trigger(RefreshLobbyInterface);
+            if *current_state == LobbyState::InLobby {
+                commands.insert_resource(CurrentLobby {
+                    id: lobby.id,
+                    info: Some(lobby.clone()),
+                });
+                commands.trigger(RefreshLobbyInterface);
+            }
         }
         MessageFromServer::PlayerInfo(player) => {
             commands.trigger(PlayerInfoUpdated(player.clone()));
@@ -957,7 +958,12 @@ fn on_msg_send(
         | MessageFromServer::ChampSelectionLocked(_) => {
             let _ = send.send(MessageFromPlayer::GetLobbyInfo(current_lobby.unwrap().id));
         }
-        MessageFromServer::GameStarted(address) => todo!(),
+        MessageFromServer::GameStarted(address) => {
+            let token = ConnectToken::try_from_bytes(&address.0).unwrap();
+            info!("Token received");
+            commands.insert_resource(GameServerToken(token));
+            next_game_state.set(crate::State::InGame);
+        },
         MessageFromServer::ServerShutdown => {
             commands.queue(CreateModal::info("Lobby server was shut down".into()));
             next_game_state.set(crate::State::Login);
@@ -965,8 +971,3 @@ fn on_msg_send(
         MessageFromServer::InitialHandshakeResponse { .. } => unreachable!(),
     }
 }
-
-#[derive(Resource)]
-struct GameServerAddress(SocketAddr);
-
-fn on_game_start(address: Res<GameServerAddress>) {}

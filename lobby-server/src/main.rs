@@ -2,26 +2,79 @@
 #![feature(try_blocks)]
 #![feature(never_type)]
 #![feature(never_type_fallback)]
+#![feature(new_range_api)]
+#![feature(async_closure)]
 
+use core::range::{Range, RangeInclusive};
 use std::{
     cmp::Ordering,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     net::{Ipv6Addr, SocketAddrV6},
+    path::PathBuf,
+    process::{Command, ExitStatus},
     sync::{Arc, Once},
     time::Duration,
 };
 
+use clap::Parser;
 use lobby_server::{
     ChampSelectState, ChampionSelection, Lobby, LobbyId, LobbySettings, LobbyShortInfo, LobbyState,
-    MessageFromPlayer, MessageFromServer, PlayerId, PlayerInfo, ReadMessage as _, Team,
+    MessageFromGameServerToLobby, MessageFromLobbyToGameServer, MessageFromPlayer,
+    MessageFromServer, PlayerId, PlayerInfo, PlayerSelection, ReadMessage as _, Team,
     WriteMessage as _,
 };
+use regex::{Regex, RegexBuilder};
 use tokio::task::{JoinHandle, JoinSet};
-use wtransport::{config::Ipv6DualStackConfig, Connection, Endpoint, Identity, ServerConfig};
+use uuid::Uuid;
+use wtransport::{
+    config::Ipv6DualStackConfig, ClientConfig, Connection, Endpoint, Identity, ServerConfig,
+};
+
+#[derive(clap::Parser)]
+struct Options {
+    game_server_launch_mode: GameServerLaunchMode,
+    game_server_path: PathBuf,
+    #[arg(value_parser = parse_port_range)]
+    game_server_port_range: RangeInclusive<u16>,
+}
+
+fn parse_port_range(arg: &str) -> anyhow::Result<RangeInclusive<u16>> {
+    let regex = Regex::new(r"^(?:(?<single>\d+)|(?<start>\d+)-(?<end>\d+))$").unwrap();
+    let captures = regex
+        .captures(arg)
+        .ok_or(anyhow::anyhow!("Invalid port range"))?;
+    if let Some(single) = captures.name("single") {
+        let port = single.as_str().parse()?;
+        Ok(RangeInclusive {
+            start: port,
+            end: port,
+        })
+    } else {
+        let start = captures
+            .name("start")
+            .ok_or(anyhow::anyhow!("Invalid port range"))?
+            .as_str()
+            .parse()?;
+        let end = captures
+            .name("end")
+            .ok_or(anyhow::anyhow!("Invalid port range"))?
+            .as_str()
+            .parse()?;
+        Ok(RangeInclusive { start, end })
+    }
+}
+
+#[derive(Clone, clap::ValueEnum)]
+enum GameServerLaunchMode {
+    Executable,
+    Cargo,
+}
 
 #[tokio::main]
 async fn main() {
-    ServerState::new().run().await;
+    let options = Options::parse();
+
+    ServerState::new(options).run().await;
 }
 
 const MAPS: [MapDef; 1] = [MapDef {
@@ -36,17 +89,21 @@ struct MapDef {
     max_teams: usize,
 }
 
-#[derive(Debug)]
+// #[derive(Debug)]
 enum Event {
     ConnectionMade(Connection),
     PlayerNameUpdated(PlayerId, String),
     MessageReceived(PlayerId, MessageFromPlayer),
     ConnectionLost(PlayerId),
+    Callback(Box<dyn FnOnce(&mut ServerState) + Send + Sync + 'static>),
     Shutdown,
 }
 
 struct ServerState {
+    options: Options,
+    used_game_server_ports: HashSet<u16>,
     lobbies: HashMap<LobbyId, Lobby>,
+    game_servers: HashMap<LobbyId, tokio::sync::oneshot::Sender<()>>,
     players: HashMap<PlayerId, PlayerInfoWithConn>,
     event_receiver: tokio::sync::mpsc::UnboundedReceiver<Event>,
     event_sender: tokio::sync::mpsc::UnboundedSender<Event>,
@@ -60,10 +117,13 @@ struct PlayerInfoWithConn {
 }
 
 impl ServerState {
-    fn new() -> Self {
+    fn new(options: Options) -> Self {
         let (event_sender, event_receiver) = tokio::sync::mpsc::unbounded_channel();
         Self {
+            options,
+            used_game_server_ports: HashSet::new(),
             lobbies: HashMap::new(),
+            game_servers: HashMap::new(),
             players: HashMap::new(),
             event_sender,
             event_receiver,
@@ -72,6 +132,11 @@ impl ServerState {
     }
 
     async fn run(&mut self) {
+        println!(
+            "{} concurrent game servers supported",
+            self.options.game_server_port_range.iter().count()
+        );
+
         // Add ctrl-c handler
 
         let send = self.event_sender.clone();
@@ -132,7 +197,7 @@ impl ServerState {
     }
 
     async fn handle_event(&mut self, msg: Event) {
-        println!("Event received: {msg:?}");
+        // println!("Event received: {msg:?}");
         match msg {
             Event::ConnectionMade(connection) => {
                 let player_id = PlayerId::new();
@@ -206,6 +271,9 @@ impl ServerState {
                 // We need to handle removing the player from the lobby it is in, if any.
                 self.handle_player_left_lobby(player_id);
                 self.players.remove(&player_id);
+            }
+            Event::Callback(func) => {
+                func(self);
             }
             Event::Shutdown => {
                 let handles = self.broadcast_global_message(MessageFromServer::ServerShutdown);
@@ -627,11 +695,7 @@ impl ServerState {
                     .all(|s| s.as_ref().is_some_and(|s| s.locked))
                 {
                     // All players locked: start game
-                    self.broadcast_lobby_message(
-                        lobby_id,
-                        None,
-                        MessageFromServer::GameStarted("what lmao gaming".into()),
-                    );
+                    self.start_game(lobby_id);
                 }
 
                 self.broadcast_lobby_message(
@@ -667,6 +731,11 @@ impl ServerState {
         // If that player was the last player, delete the lobby
         if lobby.players.values().all(Vec::is_empty) {
             self.lobbies.remove(&lobby_id);
+
+            // If a game server is running for this lobby, kill it
+            if let Some(kill) = self.game_servers.remove(&lobby_id) {
+                let _ = kill.send(());
+            }
             return;
         }
 
@@ -683,6 +752,210 @@ impl ServerState {
             None,
             MessageFromServer::PlayerLeftYourLobby(player_id),
         );
+    }
+
+    fn start_game(&mut self, lobby_id: LobbyId) {
+        let Some(lobby) = self.lobbies.get(&lobby_id) else {
+            todo!();
+        };
+
+        let LobbyState::ChampSelect(selections) = &lobby.lobby_state else {
+            todo!();
+        };
+
+        if selections.selected_champs.iter().any(|s| s.1.is_none()) {
+            todo!();
+        }
+
+        // find free port
+
+        let Some(port) = self
+            .options
+            .game_server_port_range
+            .into_iter()
+            .find(|port| !self.used_game_server_ports.contains(port))
+        else {
+            todo!()
+        };
+
+        // Start game server
+
+        let (send, mut recv) = tokio::sync::oneshot::channel();
+        self.game_servers.insert(lobby_id, send);
+
+        let lobby_token = Uuid::new_v4();
+
+        let mut cmdline = vec![];
+        match self.options.game_server_launch_mode {
+            GameServerLaunchMode::Executable => {
+                cmdline.push(self.options.game_server_path.to_string_lossy().to_string());
+            }
+            GameServerLaunchMode::Cargo => {
+                cmdline.extend("cargo run --".split_whitespace().map(String::from));
+            }
+        }
+        cmdline.push("server".into());
+        cmdline.push(lobby_token.to_string());
+        cmdline.push(port.to_string());
+
+        let dir = if self.options.game_server_path.is_dir() {
+            self.options.game_server_path.as_path()
+        } else {
+            self.options.game_server_path.parent().unwrap()
+        };
+
+        let Ok(mut process) = tokio::process::Command::new(&cmdline[0])
+            .args(&cmdline[1..])
+            .current_dir(dir)
+            .spawn()
+        else {
+            self.broadcast_lobby_message(
+                lobby_id,
+                None,
+                MessageFromServer::RequestRefused(
+                    "Failed to start game server;\nplease restart your game client.".into(),
+                ),
+            );
+            return;
+        };
+
+        let players = lobby
+            .players
+            .iter()
+            .map(|(k, v)| {
+                (
+                    *k,
+                    v.iter()
+                        .map(|p| PlayerSelection {
+                            player: self.players.get(p).unwrap().player.clone(),
+                            champion: selections
+                                .selected_champs
+                                .get(p)
+                                .unwrap()
+                                .as_ref()
+                                .unwrap()
+                                .champion
+                                .clone(),
+                        })
+                        .collect(),
+                )
+            })
+            .collect();
+
+        let connect_task = async move {
+            let x: anyhow::Result<MessageFromGameServerToLobby> = try {
+                let client = Endpoint::client(
+                    ClientConfig::builder()
+                        .with_bind_address_v6(
+                            SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, 0, 0, 0),
+                            Ipv6DualStackConfig::Allow,
+                        )
+                        .with_no_cert_validation()
+                        .build(),
+                )?;
+                println!("Lobby server trying to connect to game server...");
+                let conn = client.connect(format!("https://localhost:{port}")).await?;
+                println!("Lobby server connected! Writing message...");
+                conn.open_uni()
+                    .await?
+                    .await?
+                    .write_message(MessageFromLobbyToGameServer::LobbyInitialMessage {
+                        token: lobby_token,
+                        players,
+                    })
+                    .await?;
+                println!("Message written! Reading message...");
+                conn.accept_uni().await?.read_message_framed().await?
+            };
+            println!("Message read!");
+            x
+        };
+
+        let s = self.event_sender.clone();
+
+        tokio::spawn(async move {
+            let wait_for_exit =
+                async move |recv: &mut tokio::sync::oneshot::Receiver<()>,
+                            process: &mut tokio::process::Child| {
+                    tokio::select! {
+                        _ = recv => {
+                            eprintln!("Killing server");
+                            process.kill().await.unwrap();
+                            process.wait().await
+                        }
+                        exit = process.wait() => exit
+                    }
+                };
+
+            let on_exit = |exit: std::io::Result<ExitStatus>| {
+                println!("Game server exited");
+                if exit.is_ok_and(|c| c.success()) {
+                    s.send(Event::Callback(Box::new(move |s| {
+                        let Some(lobby) = s.lobbies.get_mut(&lobby_id) else {
+                            return;
+                        };
+                        let players: Vec<_> = lobby.players.values().flatten().copied().collect();
+                        for player in players {
+                            s.send_message(player, MessageFromServer::YouLeftLobby);
+                            s.handle_player_left_lobby(player);
+                        }
+                    })))
+                    .unwrap();
+                } else {
+                    // Failed!
+                    s.send(Event::Callback(Box::new(move |s| {
+                        s.broadcast_lobby_message(
+                            lobby_id,
+                            None,
+                            MessageFromServer::RequestRefused("Failed to start game server".into()),
+                        );
+                        let Some(lobby) = s.lobbies.get_mut(&lobby_id) else {
+                            eprintln!("????????");
+                            return;
+                        };
+                        let players: Vec<_> = lobby.players.values().flatten().copied().collect();
+                        for player in players {
+                            s.send_message(player, MessageFromServer::YouLeftLobby);
+                            s.handle_player_left_lobby(player);
+                        }
+                    })))
+                    .unwrap();
+                }
+                s.send(Event::Callback(Box::new(move |s| {
+                    s.game_servers.remove(&lobby_id);
+                }))).unwrap();
+            };
+
+            let x = tokio::select! {
+                exit = wait_for_exit(&mut recv, &mut process) => {
+                    on_exit(exit);
+                    return;
+                }
+                x = connect_task => {
+                    x
+                }
+            };
+
+            match x {
+                Ok(x) => {
+                    // Success!
+                    let MessageFromGameServerToLobby::PlayerTokensGenerated { players } = x;
+                    s.send(Event::Callback(Box::new(move |s| {
+                        for (player, token) in players {
+                            s.send_message(player, MessageFromServer::GameStarted(token))
+                                .unwrap();
+                        }
+                    })))
+                    .unwrap();
+                }
+                Err(e) => {
+                    // Error!
+                    eprintln!("Error: {e}");
+                    process.kill().await.unwrap();
+                }
+            }
+            on_exit(wait_for_exit(&mut recv, &mut process).await);
+        });
     }
 
     fn send_message(

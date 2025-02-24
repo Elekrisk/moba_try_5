@@ -2,11 +2,14 @@ use std::{net::{IpAddr, Ipv6Addr, SocketAddr}, time::Duration};
 
 use bevy::prelude::*;
 use client::ClientPlugins;
-use lightyear::prelude::*;
+use lightyear::{connection::netcode::PRIVATE_KEY_BYTES, prelude::*};
 use server::{NetConfig, ServerPlugins};
 
 pub const FIXED_TIMESTEP_HZ: f64 = 64.0;
 pub const SERVER_REPLICATION_INTERVAL: Duration = Duration::from_millis(100);
+
+#[derive(Resource)]
+pub struct GameServerToken(pub ConnectToken);
 
 pub fn shared_config() -> SharedConfig {
     SharedConfig {
@@ -16,13 +19,8 @@ pub fn shared_config() -> SharedConfig {
     }
 }
 
-pub fn build_client_plugin(address: SocketAddr) -> ClientPlugins {
-    let auth = client::Authentication::Manual {
-        server_addr: address,
-        client_id: 0,
-        private_key: Key::default(),
-        protocol_id: 0,
-    };
+pub fn build_client_plugin() -> ClientPlugins {
+    let auth = client::Authentication::None;
     let io = client::IoConfig {
         transport: client::ClientTransport::UdpSocket(SocketAddr::new(
             IpAddr::V6(Ipv6Addr::UNSPECIFIED),
@@ -43,12 +41,17 @@ pub fn build_client_plugin(address: SocketAddr) -> ClientPlugins {
     ClientPlugins::new(config)
 }
 
-pub fn build_server_plugin() -> ServerPlugins {
+pub fn build_server_plugin(private_key: [u8; PRIVATE_KEY_BYTES]) -> ServerPlugins {
     let io = server::IoConfig {
         transport: server::ServerTransport::UdpSocket(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 35475)),
         ..default()
     };
-    let net_config = server::NetConfig::Netcode { config: server::NetcodeConfig::default(), io };
+    let config = server::NetcodeConfig {
+        private_key,
+        ..default()
+    };
+
+    let net_config = server::NetConfig::Netcode { config, io };
     let config = server::ServerConfig {
         shared: shared_config(),
         net: vec![net_config],

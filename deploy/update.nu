@@ -4,7 +4,7 @@
 
 print 'Checking for new version...'
 
-let url = 'http://server:8000'
+let url = 'http://server.lan:8081'
 
 let platform = match (uname).kernel-name {
     Windows_NT => 'windows'

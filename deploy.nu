@@ -2,25 +2,22 @@
 
 def main [
 ] {
-    # Get build date and number
+    # Get last deployed version
+    let latest = http get http://server.lan:8081/versions | get version | where $it != latest | sort -n | last
 
-    let last_deploy = try {
-        open last-deploy.toml
-    } catch {
-        {date: "2000-00-00" number: 0}
-    }
+    let latest = $latest | parse '{date}.{number}' | get 0
+    let today = date now | format date '%Y-%m-%d'
 
-    let today = date now | format date "%Y-%m-%d"
-    let number = if $today != $last_deploy.date {
-        1
+    let version = if $latest.date == $today {
+        $'($today).($latest.number | into int | $in + 1)'
     } else {
-        $last_deploy.number + 1
+        $'($today).1'
     }
     
-    let ext = if $env.OS == Windows_NT { ".exe" }
+    let ext = if $nu.os-info.name == windows { ".exe" }
     
     let configs = [
-        {platform: windows target: x86_64-pc-windows-msvc ext: .exe}
+        {platform: windows target: x86_64-pc-windows-gnu ext: .exe}
         {platform: linux target: x86_64-unknown-linux-gnu ext: null}
     ]
 
@@ -30,17 +27,17 @@ def main [
     }
 
     $configs | each {|config|
-        let name = $'($today).($number)-($config.platform).tar.gz'
+        let name = $'($version)-($config.platform).tar.gz'
 
-        cross build --release --target $config.target
+        cross build --release --target $config.target --target-dir $'($config.target)/target'
         if ("staging" | path exists) { rm -r staging }
         mkdir staging
-        cp $'target/($config.target)/release/lobby-server($config.ext)' staging/
-        cp $'target/($config.target)/release/game($config.ext)' staging/
+        cp $'($config.target)/target/($config.target)/release/lobby-server($config.ext)' staging/
+        cp $'($config.target)/target/($config.target)/release/game($config.ext)' staging/
         cp -r game/assets staging/assets
-        $'($today).($number)' | save staging/version
+        $version | save staging/version
 
-        let name = $'($today).($number)-($config.platform).tar.gz'
+        let name = $'($version)-($config.platform).tar.gz'
         let latest = $'latest-($config.platform).tar.gz'
         
         cd staging
@@ -50,6 +47,4 @@ def main [
         cd ..
         rm -r staging
     }
-
-    { date: $today, number: $number } | save -f last-deploy.toml
 }

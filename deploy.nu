@@ -3,7 +3,14 @@
 def main [
 ] {
     # Get last deployed version
-    let latest = http get http://server.lan:8081/versions/latest
+    let latest = try {
+        http get http://server.lan:8081/versions/latest
+    } catch {
+        if (http get https://moba.elekrisk.com/versions | is-empty) {
+            # No versions available; set latest to a dummy value
+            {version: {date: ''}}
+        }
+    }
 
     let today = date now | format date '%Y-%m-%d'
 

@@ -1,2 +1,7 @@
 target/
-.helix/
+**/.helix/
+*/target/
+deploy/
+
+deploy_key
+deploy_key.pub

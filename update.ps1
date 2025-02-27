@@ -23,7 +23,7 @@ if (Test-Path -Path "last-version") {
 } else {
     New-Item -Path . -Name "last-version" -ItemType "directory"
 }
-Move-Item -Path assets,game.exe,lobby-server.exe,update.ps1,version.txt -Destination last-version/
+Move-Item -Path assets,game.exe,server.exe,lobby-server.exe,update.ps1,version.txt -Destination last-version/
 
 # Unzip new intallation into this same folder
 Write-Output "Unpacking..."

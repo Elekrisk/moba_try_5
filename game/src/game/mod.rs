@@ -12,7 +12,11 @@ pub fn game(app: &mut App) {
     app.add_systems(OnEnter(crate::State::InGame), setup);
 }
 
-fn setup(token: Res<GameServerToken>, mut config: ResMut<client::ClientConfig>, mut commands: Commands) {
+fn setup(
+    token: Res<GameServerToken>,
+    mut config: ResMut<client::ClientConfig>,
+    mut commands: Commands,
+) {
     let client::NetConfig::Netcode { auth, .. } = &mut config.net else {
         unreachable!()
     };

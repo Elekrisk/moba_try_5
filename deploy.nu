@@ -45,12 +45,13 @@ def main [
     }
 
     $configs | each {|config|
-        cross build --release --target $config.target --target-dir $'($config.target)/target'
+        RUSTFLAGS="" cross build --release --target $config.target --target-dir $'($config.target)/target'
         if ("staging" | path exists) { rm -r staging }
         mkdir staging
         cp $'($config.target)/target/($config.target)/release/lobby-server($config.ext)' staging/
         cp $'($config.target)/target/($config.target)/release/game($config.ext)' staging/
-        cp -r game/assets staging/assets
+        cp $'($config.target)/target/($config.target)/release/server($config.ext)' staging/
+        cp -r assets staging/assets
         cp $config.update_script staging/
         $version | $"($in)\n" | save staging/version.txt
 

@@ -92,7 +92,11 @@ pub struct CreateModal {
 }
 
 impl CreateModal {
-    pub fn new(title: impl Into<String>, allow_close: bool, builder: impl FnOnce(&mut ChildBuilder) + Send + Sync + 'static) -> Self {
+    pub fn new(
+        title: impl Into<String>,
+        allow_close: bool,
+        builder: impl FnOnce(&mut ChildBuilder) + Send + Sync + 'static,
+    ) -> Self {
         Self {
             title: title.into(),
             allow_close,
@@ -245,7 +249,7 @@ pub fn build_textedit(
         .spawn((
             TextEdit,
             CosmicEditBuffer::default().with_text(font_system, initial.as_ref(), attrs),
-            ScrollEnabled::Enabled,
+            ScrollEnabled(true),
             CosmicTextAlign::left_center(),
             CosmicWrap::InfiniteLine,
             MaxLines(1),

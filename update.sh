@@ -26,7 +26,7 @@ if [ -d last-version ]; then
     rm -r last-version/*
 fi
 mkdir -p last-version
-mv assets game lobby-server update.sh version.txt last-version/
+mv assets game server lobby-server update.sh version.txt last-version/
 
 echo "Unpacking..."
 # Untar new installation into this same folder

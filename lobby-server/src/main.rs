@@ -791,10 +791,13 @@ impl ServerState {
                 cmdline.push(self.options.game_server_path.to_string_lossy().to_string());
             }
             GameServerLaunchMode::Cargo => {
-                cmdline.extend("cargo run --".split_whitespace().map(String::from));
+                cmdline.extend(
+                    "cargo run --bin=server --"
+                        .split_whitespace()
+                        .map(String::from),
+                );
             }
         }
-        cmdline.push("server".into());
         cmdline.push(lobby_token.to_string());
         cmdline.push(port.to_string());
 
@@ -923,7 +926,8 @@ impl ServerState {
                 }
                 s.send(Event::Callback(Box::new(move |s| {
                     s.game_servers.remove(&lobby_id);
-                }))).unwrap();
+                })))
+                .unwrap();
             };
 
             let x = tokio::select! {

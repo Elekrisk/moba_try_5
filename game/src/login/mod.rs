@@ -4,12 +4,8 @@ use std::{
     time::Duration,
 };
 
-use crate::{
-    lobby::SendMessage, ui::CommandModalExt, FlattenResult, State
-};
-use bevy::
-    prelude::*
-;
+use crate::{lobby::SendMessage, ui::CommandModalExt, FlattenResult, State};
+use bevy::prelude::*;
 use bevy_cosmic_edit::{
     cosmic_text::{Attrs, AttrsOwned, BufferRef, Color as CosmicColor, Edit, Family, Metrics},
     editor::CosmicEditor,
@@ -128,7 +124,7 @@ fn setup_ui(
                     .spawn((
                         TextEdit,
                         CosmicEditBuffer::default().with_text(&mut font_system, &login_server, attrs),
-                        ScrollEnabled::Enabled,
+                        ScrollEnabled(true),
                         CosmicTextAlign::left_center(),
                         CosmicWrap::InfiniteLine,
                         MaxLines(1),
@@ -149,7 +145,7 @@ fn setup_ui(
                     .spawn((
                         TextEdit,
                         CosmicEditBuffer::default().with_text(&mut font_system, &login_name, attrs),
-                        ScrollEnabled::Enabled,
+                        ScrollEnabled(true),
                         CosmicTextAlign::left_center(),
                         CosmicWrap::InfiniteLine,
                         MaxLines(1),

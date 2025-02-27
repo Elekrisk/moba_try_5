@@ -46,7 +46,7 @@ pub struct Lobby {
 pub enum LobbyState {
     Normal,
     ChampSelect(ChampSelectState),
-    InGame
+    InGame,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -146,14 +146,14 @@ pub enum MessageFromLobbyToGameServer {
     LobbyInitialMessage {
         token: Uuid,
         players: HashMap<Team, Vec<PlayerSelection>>,
-    }
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum MessageFromGameServerToLobby {
     PlayerTokensGenerated {
-        players: HashMap<PlayerId, ConnectTokenWrapper>
-    }
+        players: HashMap<PlayerId, ConnectTokenWrapper>,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

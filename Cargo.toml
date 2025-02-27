@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["game", "lobby-server"]
+members = [ "engine","game", "lobby-server", "server"]
 
 # Enable a small amount of optimization in the dev profile.
 [profile.dev]
@@ -32,3 +32,6 @@ strip = "debuginfo"
 # [patch.crates-io]
 # bevy = { path = "/home/elekrisk/src/bevy", version = "0.15.9999" }
 
+
+[patch.crates-io]
+wtransport = { path = "/home/elekrisk/src/wtransport/wtransport" }

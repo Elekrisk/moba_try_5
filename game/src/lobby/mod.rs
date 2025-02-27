@@ -14,7 +14,8 @@ use champ_select::build_champ_select;
 use lightyear::{
     client::config::{ClientConfig, NetcodeConfig},
     prelude::{
-        client::{Authentication, ClientTransport, IoConfig, NetConfig}, ConnectToken, SharedConfig
+        client::{Authentication, ClientTransport, IoConfig, NetConfig},
+        ConnectToken, SharedConfig,
     },
 };
 use lobby_server::{
@@ -24,11 +25,13 @@ use lobby_server::{
 use tokio::task::JoinHandle;
 
 use crate::{
-    game::network::GameServerToken, login::{LobbyConnection, MyPlayerId}, ui::{
+    game::network::GameServerToken,
+    login::{LobbyConnection, MyPlayerId},
+    ui::{
         build_textedit,
         checkbox::{build_checkbox, Checkbox},
         create_modal, CloseModal, CreateModal, OnClickExt, ScrollEvent,
-    }
+    },
 };
 
 pub fn lobby(app: &mut App) {
@@ -125,11 +128,12 @@ fn setup(
 }
 
 fn cleanup(recv_task: Res<RecvLobbyTask>, send_task: Res<SendLobbyTask>, mut commands: Commands) {
-    recv_task.0.abort();
-    send_task.0.abort();
-    commands.remove_resource::<RecvLobbyTask>();
-    commands.remove_resource::<SendLobbyTask>();
-    commands.remove_resource::<SendMessage>();
+    // recv_task.0.abort();
+    // send_task.0.abort();
+
+    // commands.remove_resource::<RecvLobbyTask>();
+    // commands.remove_resource::<SendLobbyTask>();
+    // commands.remove_resource::<SendMessage>();
 }
 
 #[derive(Component)]
@@ -906,8 +910,8 @@ fn on_player_info_updated(
 
 fn on_msg_send(
     trigger: Trigger<MsgEvent>,
-    current_state: Res<State<LobbyState>>,
-    mut next_state: ResMut<NextState<LobbyState>>,
+    current_state: Option<Res<State<LobbyState>>>,
+    mut next_state: Option<ResMut<NextState<LobbyState>>>,
     mut next_game_state: ResMut<NextState<crate::State>>,
     send: Res<SendMessage>,
     current_lobby: Option<Res<CurrentLobby>>,
@@ -929,14 +933,20 @@ fn on_msg_send(
                 id: *id,
                 info: None,
             });
-            next_state.set(LobbyState::InLobby);
+            if let Some(mut next_state) = next_state {
+                next_state.set(LobbyState::InLobby);
+            }
         }
         MessageFromServer::YouLeftLobby => {
             commands.remove_resource::<CurrentLobby>();
-            next_state.set(LobbyState::LobbyBrowser);
+            if let Some(mut next_state) = next_state {
+                next_state.set(LobbyState::LobbyBrowser);
+            }
         }
         MessageFromServer::LobbyInfo(lobby) => {
-            if *current_state == LobbyState::InLobby {
+            if let Some(current_state) = current_state
+                && *current_state == LobbyState::InLobby
+            {
                 commands.insert_resource(CurrentLobby {
                     id: lobby.id,
                     info: Some(lobby.clone()),
@@ -956,14 +966,16 @@ fn on_msg_send(
         | MessageFromServer::ChampSelectEntered
         | MessageFromServer::PlayerSelectedChampion(_, _)
         | MessageFromServer::ChampSelectionLocked(_) => {
-            let _ = send.send(MessageFromPlayer::GetLobbyInfo(current_lobby.unwrap().id));
+            if current_lobby.is_some() {
+                let _ = send.send(MessageFromPlayer::GetLobbyInfo(current_lobby.unwrap().id));
+            }
         }
         MessageFromServer::GameStarted(address) => {
             let token = ConnectToken::try_from_bytes(&address.0).unwrap();
             info!("Token received");
             commands.insert_resource(GameServerToken(token));
             next_game_state.set(crate::State::InGame);
-        },
+        }
         MessageFromServer::ServerShutdown => {
             commands.queue(CreateModal::info("Lobby server was shut down".into()));
             next_game_state.set(crate::State::Login);
